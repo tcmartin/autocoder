@@ -4,6 +4,9 @@ import subprocess
 import requests
 import json
 from bs4 import BeautifulSoup
+import tiktoken
+encoding = tiktoken.get_encoding("cl100k_base")
+encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 sys_message="""
 Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array. 
 functions available: save_memory- description- writes to short term memory
@@ -24,9 +27,24 @@ Hi! I’m intereste in math and computer science
 
 
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 headers = {"X-PaLM-Api": os.environ["PALM_APIKEY"]}
 
-
+def num_tokens_from_string(string: str) -> int:
+    """Returns the number of tokens in a text string."""
+    num_tokens = len(encoding.encode(string))
+    return num_tokens
+def leftTruncate(text, length):
+    encoded = encoding.encode(text)
+    num = len(encoded)
+    if num > length:
+        return encoding.decode(encoded[num - length:])
+    else:
+        return text
+    
 def refresh_token() -> str:
     result = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -52,12 +70,13 @@ client = re_instantiate_weaviate()
 
 
 class bot:
-    def __init__(self, name, token, admin_id, base_message="", file_directory=None,token_threshold=8000):
+    def __init__(self, name="", token="", admin_id="", base_message="", file_directory=None,token_threshold=7500):
         self.context = ""
         self.recent_messages = []
         self.name = name
         self.recent_message = ""
         self.memory = []
+        self.prev_commands = []
         self.base_message = base_message
         self.heart_beat = False
         self.system_notice = ""
@@ -86,6 +105,21 @@ class bot:
         Format: {function:params}
         Example: {save_memory: {memory: "This is interesting"}}
         """
+        # Calculate the token count
+        cls.token_count = num_tokens_from_string(system_message)
+
+        # Check if token count exceeds the threshold and truncate if necessary
+        if cls.token_count > cls.token_threshold:
+            system_message = leftTruncate(system_message, cls.token_threshold)
+
+        # Add token count and remaining tokens at the top of the message
+        token_info = f"Token Count: {cls.token_count}\nTokens Remaining: {cls.token_threshold - cls.token_count}\n"
+        system_message = token_info + system_message
+
+        # Add system notice if token count exceeded
+        if cls.token_count > cls.token_threshold:
+            cls.system_notice = "Alert: Token count has exceeded the threshold. Message truncated. Please manage your data."
+            system_message = cls.system_notice + "\n" + system_message
         return system_message
     def update_recent_messages(self, message):
         """
@@ -124,7 +158,7 @@ class bot:
         Parameters:
         - memory (str): The memory to be saved.
         """
-        memory.append(memory)
+        self.memory.append(memory)
         self.register_function_description("save_memory", desc)
         
     def delete_lines(self, file_name, lines_to_delete):
@@ -155,17 +189,38 @@ class bot:
             return f"An error occurred: {e}"
 
     def read_file(self, file_name, start_line, num_lines):
-        desc = """
-        Reads a file.
+        desc ="""
+        Reads a file and returns a specified range of lines along with their start and end line numbers.
         Parameters:
         - file_name (str): The name of the file to be read.
-        - start_line (int): The line to start reading from.
+        - start_line (int): The line to start reading from (0-indexed).
         - num_lines (int): The number of lines to read.
+        Returns:
+        - dict: A dictionary containing the start line, end line, and the lines read.
         """
         self.register_function_description("read_file", desc)
-        with open(file_name, "r") as f:
-            lines = f.readlines()
-            return lines[start_line:start_line+num_lines]
+        try:
+            with open(file_name, "r") as f:
+                lines = f.readlines()
+
+            # Calculate the end line index
+            end_line = start_line + num_lines
+
+            # Extract the requested lines
+            requested_lines = lines[start_line:end_line]
+
+            # Return the result along with the start and end line numbers
+            return {
+                "start_line": start_line,
+                "end_line": end_line - 1,  # Adjusting because the range is exclusive at the end
+                "lines": requested_lines
+            }
+        except FileNotFoundError:
+            return {"error": "File not found."}
+        except Exception as e:
+            return {"error": f"An error occurred: {e}"}
+
+
     def write_file(self, file_name, start_line, num_lines, lines):
         desc = """
         Writes to a file starting at a specific line.
@@ -262,8 +317,10 @@ class bot:
         - memory (int): Index of the memory to be removed.
         """
         self.register_function_description("pop_memory", desc)
-        
-        self.memory.pop(memory)
+        try:
+            self.memory.pop(memory)
+        except IndexError:
+            return "Memory not found."
         
 
     def write_memory(self, memory):
