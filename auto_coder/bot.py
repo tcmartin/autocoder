@@ -8,6 +8,12 @@ import tiktoken
 encoding = tiktoken.get_encoding("cl100k_base")
 encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 import inspect
+import fnmatch
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 sys_message="""
 Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array. 
 functions available: save_memory- description- writes to short term memory
@@ -30,7 +36,13 @@ Hi! I’m intereste in math and computer science
 import os
 
 from dotenv import load_dotenv
-
+import re
+from langchain.llms import VertexAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from kor.extraction import create_extraction_chain, Object, Text
+from kor.nodes import Object, Text, Number
+#@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 load_dotenv()
 headers = {"X-PaLM-Api": os.environ["PALM_APIKEY"]}
 
@@ -66,14 +78,12 @@ def re_instantiate_weaviate() -> weaviate.Client:
 
 client = re_instantiate_weaviate()
 
+llm = VertexAI()
 
 
-def include_in_system_message(func):
-    func.include_in_system_message = True
-    return func
 
 class bot:
-    function_descriptions = {}
+    
     def __init__(self, name="", token="", admin_id="", base_message="", file_directory=None,token_threshold=7500):
         self.context = ""
         self.recent_messages = []
@@ -85,14 +95,21 @@ class bot:
         self.heart_beat = False
         self.system_notice = ""
         self.token_count = 0
+        self.function_descriptions = {}
         self.token_threshold = token_threshold
         self.extract_function_descriptions()
+        print(self.function_descriptions)
+        self.schema = [self.create_schema_object(name, desc) for name, desc in self.function_descriptions.items()]
+        self.chain = create_extraction_chain(llm, self.schema, encoder_or_encoder_class="json")
+        
         if file_directory is None:
             self.file_directory = os.getcwd()
         else:
             self.file_directory = file_directory
-        self.function_descriptions = {}
-
+        
+    def include_in_system_message(func):
+        func.include_in_system_message = True
+        return func
     @classmethod
     def register_function_description(cls, func_name, description):
         cls.function_descriptions[func_name] = description
@@ -105,12 +122,47 @@ class bot:
         for func, desc in self.function_descriptions.items():
             description_text += f"{func} - {desc}\n"
         return description_text
+
+    def get_bot_output(self, message):
+        """
+        Returns the bot output for a given user message.
+        """
+        # Prepare the system message
+        self.chain.run(message)['data']
+
+    def parse_description(description):
+        """Parse a function description to extract parameters."""
+        params_pattern = r"Parameters: (.+)"
+        params_text = re.search(params_pattern, description).group(1)
+
+        param_pattern = r"- (\w+) \((\w+)\): ([^.]+)"
+        params = re.findall(param_pattern, params_text)
+
+        return [{
+            "id": param[0],
+            "type": param[1],
+            "description": param[2]
+        } for param in params]
+
+    def create_schema_object(self, func_name, description):
+        """Create a schema object for a function based on its description."""
+        params = self.parse_description(description)
+        attributes = []
+        for param in params:
+            param_type = Text if param['type'] in ['str', 'bool'] else Number  # Simplified type handling
+            attributes.append(param_type(id=param['id'], description=param['description']))
+
+        return Object(
+            id=func_name,
+            description=description.split("Parameters:")[0].strip(),
+            attributes=attributes
+        )
     def generate_system_message(self):
-        system_message = self.base_message+"Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array.\n"+"System Functions:\n"
+        system_message = self.base_message+"Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have {self.token_threshold} tokens.The only way to respond to the user is using the message_user function in the array.\n"+"System Functions:\n"
         system_message += self.get_function_descriptions()
-        system_message += f"\nTokens Remaining: {self.token_threshold - self.token_count}"
+    
         system_message += "\nFile Directory Overview:\n" + self.get_directory_overview(self.file_directory)
-        system_message = "Recent Messages:\n"
+        system_message += "Recent Messages:\n"
         for msg in self.recent_messages:
             system_message += f"- {msg}\n"
         system_message += """
@@ -143,10 +195,34 @@ class bot:
     @classmethod
     def get_directory_overview(cls, path):
         """
-        Returns a string representation of the file directory overview.
+        Returns a string representation of the file directory overview, ignoring files/folders in .gitignore.
         """
+        def parse_gitignore(gitignore_path):
+            """Parse .gitignore and return a list of patterns."""
+            patterns = []
+            if os.path.exists(gitignore_path):
+                with open(gitignore_path, 'r') as file:
+                    for line in file:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            patterns.append(line)
+            return patterns
+
+        def is_ignored(path, ignore_patterns):
+            """Check if a given path matches any of the ignore patterns."""
+            for pattern in ignore_patterns:
+                if fnmatch.fnmatch(path, pattern):
+                    return True
+            return False
+
+        gitignore_path = os.path.join(path, '.gitignore')
+        ignore_patterns = parse_gitignore(gitignore_path)
+
         overview = ""
         for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns)]
+            files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns)]
+
             level = root.replace(path, '').count(os.sep)
             indent = ' ' * 4 * (level)
             overview += f"{indent}{os.path.basename(root)}/\n"
@@ -154,15 +230,7 @@ class bot:
             for f in files:
                 overview += f"{subindent}{f}\n"
         return overview
-    def update_token_count(self, added_tokens):
-        """
-        Updates the token count and checks if the threshold is exceeded.
-        Parameters:
-        - added_tokens (int): Number of tokens to add to the count.
-        """
-        self.token_count += added_tokens
-        if self.token_count > self.token_threshold:
-            self.system_notice = "Alert: Token count has exceeded the threshold. Consider deleting some data."
+    
     @include_in_system_message
     def save_memory(self, memory):
         """

@@ -21,7 +21,10 @@ def run():
             print(system_message)
         
         # Get response from llms.get_response
-        json_commands = json.loads(get_response(system_message))
+        bot_response = bot.get_bot_output(system_message)
+        if DEBUG:
+            print(bot_response)
+        json_commands = json.loads(bot_response)
         if DEBUG:
             print(json_commands)
         
