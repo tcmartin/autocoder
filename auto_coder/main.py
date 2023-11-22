@@ -6,7 +6,7 @@ import json
 app = typer.Typer()
 
 
-
+DEBUG = True
 @app.command()
 def run():
     print("Running")
@@ -17,9 +17,13 @@ def run():
     while True:
         # Prepare the system message
         system_message = my_bot.generate_system_message()
+        if DEBUG:
+            print(system_message)
         
         # Get response from llms.get_response
         json_commands = json.loads(get_response(system_message))
+        if DEBUG:
+            print(json_commands)
         
         # Execute the commands and store responses
         responses = my_bot.interpret_json(json_commands)

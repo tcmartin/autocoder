@@ -52,12 +52,13 @@ client = re_instantiate_weaviate()
 
 
 class bot:
-    def __init__(self, name, token, admin_id, file_directory,token_threshold=8000):
+    def __init__(self, name, token, admin_id, base_message="", file_directory=None,token_threshold=8000):
         self.context = ""
         self.recent_messages = []
         self.name = name
         self.recent_message = ""
         self.memory = []
+        self.base_message = base_message
         self.heart_beat = False
         self.system_notice = ""
         self.token_count = 0
@@ -73,7 +74,7 @@ class bot:
         cls.function_descriptions[func_name] = description
     @classmethod
     def generate_system_message(cls):
-        system_message = "Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array.\n"+"System Functions:\n"
+        system_message = cls.base_message+"Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array.\n"+"System Functions:\n"
         for func, desc in cls.function_descriptions.items():
             system_message += f"{func} - {desc}\n"
         system_message += f"\nTokens Remaining: {cls.token_threshold - cls.token_count}"
