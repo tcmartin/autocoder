@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import tiktoken
 encoding = tiktoken.get_encoding("cl100k_base")
 encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+import inspect
 sys_message="""
 Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array. 
 functions available: save_memory- description- writes to short term memory
@@ -67,9 +68,12 @@ client = re_instantiate_weaviate()
 
 
 
-
+def include_in_system_message(func):
+    func.include_in_system_message = True
+    return func
 
 class bot:
+    function_descriptions = {}
     def __init__(self, name="", token="", admin_id="", base_message="", file_directory=None,token_threshold=7500):
         self.context = ""
         self.recent_messages = []
@@ -82,6 +86,7 @@ class bot:
         self.system_notice = ""
         self.token_count = 0
         self.token_threshold = token_threshold
+        self.extract_function_descriptions()
         if file_directory is None:
             self.file_directory = os.getcwd()
         else:
@@ -91,35 +96,42 @@ class bot:
     @classmethod
     def register_function_description(cls, func_name, description):
         cls.function_descriptions[func_name] = description
-    @classmethod
-    def generate_system_message(cls):
-        system_message = cls.base_message+"Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array.\n"+"System Functions:\n"
-        for func, desc in cls.function_descriptions.items():
-            system_message += f"{func} - {desc}\n"
-        system_message += f"\nTokens Remaining: {cls.token_threshold - cls.token_count}"
-        system_message += "\nFile Directory Overview:\n" + cls.get_directory_overview(cls.file_directory)
+    def extract_function_descriptions(self):
+        for name, func in inspect.getmembers(self, predicate=inspect.ismethod):
+            if getattr(func, 'include_in_system_message', False) and func.__doc__:
+                self.function_descriptions[name] = func.__doc__.strip()
+    def get_function_descriptions(self):
+        description_text = ""
+        for func, desc in self.function_descriptions.items():
+            description_text += f"{func} - {desc}\n"
+        return description_text
+    def generate_system_message(self):
+        system_message = self.base_message+"Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array.\n"+"System Functions:\n"
+        system_message += self.get_function_descriptions()
+        system_message += f"\nTokens Remaining: {self.token_threshold - self.token_count}"
+        system_message += "\nFile Directory Overview:\n" + self.get_directory_overview(self.file_directory)
         system_message = "Recent Messages:\n"
-        for msg in cls.recent_messages:
+        for msg in self.recent_messages:
             system_message += f"- {msg}\n"
         system_message += """
         Format: {function:params}
         Example: {save_memory: {memory: "This is interesting"}}
         """
         # Calculate the token count
-        cls.token_count = num_tokens_from_string(system_message)
+        self.token_count = num_tokens_from_string(system_message)
 
         # Check if token count exceeds the threshold and truncate if necessary
-        if cls.token_count > cls.token_threshold:
-            system_message = leftTruncate(system_message, cls.token_threshold)
+        if self.token_count > self.token_threshold:
+            system_message = leftTruncate(system_message, self.token_threshold)
 
         # Add token count and remaining tokens at the top of the message
-        token_info = f"Token Count: {cls.token_count}\nTokens Remaining: {cls.token_threshold - cls.token_count}\n"
+        token_info = f"Token Count: {self.token_count}\nTokens Remaining: {self.token_threshold - self.token_count}\n"
         system_message = token_info + system_message
 
         # Add system notice if token count exceeded
-        if cls.token_count > cls.token_threshold:
-            cls.system_notice = "Alert: Token count has exceeded the threshold. Message truncated. Please manage your data."
-            system_message = cls.system_notice + "\n" + system_message
+        if self.token_count > self.token_threshold:
+            self.system_notice = "Alert: Token count has exceeded the threshold. Message truncated. Please manage your data."
+            system_message = self.system_notice + "\n" + system_message
         return system_message
     def update_recent_messages(self, message):
         """
@@ -151,29 +163,24 @@ class bot:
         self.token_count += added_tokens
         if self.token_count > self.token_threshold:
             self.system_notice = "Alert: Token count has exceeded the threshold. Consider deleting some data."
-
+    @include_in_system_message
     def save_memory(self, memory):
-        desc = """
+        """
         Writes to short term memory.
         Parameters:
         - memory (str): The memory to be saved.
         """
         self.memory.append(memory)
-        self.register_function_description("save_memory", desc)
         
+    @include_in_system_message
     def delete_lines(self, file_name, lines_to_delete):
-        desc = """
+        """
         Deletes specific lines from a file.
         Parameters:
         - file_name (str): The name of the file to be modified.
         - lines_to_delete (list of int): The line numbers to be deleted (0-indexed).
         """
-        self.register_function_description("delete_lines", """
-        Deletes specific lines from a file.
-        Parameters:
-        - file_name (str): The name of the file to be modified.
-        - lines_to_delete (list of int): The line numbers to be deleted (0-indexed).
-        """)
+        
 
         try:
             with open(file_name, 'r') as file:
@@ -187,9 +194,9 @@ class bot:
             return "File not found."
         except Exception as e:
             return f"An error occurred: {e}"
-
+    @include_in_system_message
     def read_file(self, file_name, start_line, num_lines):
-        desc ="""
+        """
         Reads a file and returns a specified range of lines along with their start and end line numbers.
         Parameters:
         - file_name (str): The name of the file to be read.
@@ -198,7 +205,7 @@ class bot:
         Returns:
         - dict: A dictionary containing the start line, end line, and the lines read.
         """
-        self.register_function_description("read_file", desc)
+        
         try:
             with open(file_name, "r") as f:
                 lines = f.readlines()
@@ -220,9 +227,9 @@ class bot:
         except Exception as e:
             return {"error": f"An error occurred: {e}"}
 
-
+    @include_in_system_message
     def write_file(self, file_name, start_line, num_lines, lines):
-        desc = """
+        """
         Writes to a file starting at a specific line.
         Parameters:
         - file_name (str): The name of the file to be written to.
@@ -230,7 +237,7 @@ class bot:
         - num_lines (int): The number of lines to write.
         - lines (list): The lines to be written.
         """
-        self.register_function_description("write_file", desc)
+        
 
         # Read existing file content
         try:
@@ -253,8 +260,9 @@ class bot:
         # Write modified content back to file
         with open(file_name, 'w') as file:
             file.writelines(existing_lines)
+    @include_in_system_message
     def replace_lines(self, file_name, start_line, end_line, new_lines):
-        desc = """
+        """
         Replaces lines in a file with new content.
         Parameters:
         - file_name (str): The name of the file to be modified.
@@ -262,7 +270,7 @@ class bot:
         - end_line (int): The last line to be replaced (0-indexed).
         - new_lines (list): The new lines to be inserted.
         """
-        self.register_function_description("replace_lines", desc)
+        
 
         # Read the existing file content
         try:
@@ -286,14 +294,15 @@ class bot:
         # Write the modified content back to the file
         with open(file_name, 'w') as file:
             file.writelines(modified_content)
+    @include_in_system_message
     def search_in_file(self, file_name, search_term):
-        desc = """
+        """
         Searches for a term in a file and returns lines containing that term along with their line numbers.
         Parameters:
         - file_name (str): The name of the file to be searched.
         - search_term (str): The term to search for in the file.
         """
-        self.register_function_description("search_in_file", desc)
+        
 
         # Initialize a list to hold the results
         results = []
@@ -308,30 +317,30 @@ class bot:
 
         return results
         
-        
+    @include_in_system_message
     def pop_memory(self, memory):
-        desc = """
+        """
         Removes from memory.
 
         Parameters:
         - memory (int): Index of the memory to be removed.
         """
-        self.register_function_description("pop_memory", desc)
+        
         try:
             self.memory.pop(memory)
         except IndexError:
             return "Memory not found."
         
-
+    @include_in_system_message
     def write_memory(self, memory):
-        desc = """
+        """
         Writes to long term memory (vector database).
 
         Parameters:
         - memory (str): The memory to be written.
         """
 
-        self.register_function_description("write_memory", desc)
+        
        
         client.batch.configure(batch_size=100)  # Configure batch
         with client.batch as batch:  # Initialize a batch process
@@ -342,15 +351,15 @@ class bot:
                 data_object=properties,
                 class_name="Memory"
             )
-        
+    @include_in_system_message
     def search_memory(self, memory):
-        desc = """
+        """
         Searches long term memory (vector database).
 
         Parameters:
         - memory (str): The memory to be searched for.
         """
-        self.register_function_description("search_memory", desc)
+        
         
         response = (
             client.query
@@ -364,28 +373,30 @@ class bot:
         for i in response["data"]["Get"]["Memory"]:
             memories.append(i["memory"])
         return memories
+    @include_in_system_message
     def message_user(self, message):
-        desc = """
+        """
         Sends a message to the user.
 
         Parameters:
         - message (str): The message to be sent to the user.
         """
-        self.register_function_description("message_user", desc)
+        
         
         print(message)
         self.update_recent_messages("Assistant (You): "+message)
         
-
+    @include_in_system_message
     def heart_beat(self):
-        desc = """
+        """
         Prompts you again without waiting for user input.
         """
-        self.register_function_description("heart_beat", desc)
+        
         
         self.heart_beat = True
+    @include_in_system_message
     def download_and_extract_text(self, url, is_html=False):
-        desc ="""
+        """
         Downloads a webpage or a text file from a given URL and extracts its text.
         Parameters:
         - url (str): The URL of the webpage or text file to download.
@@ -393,7 +404,7 @@ class bot:
         Returns:
         - str: The text content of the downloaded webpage or file.
         """
-        self.register_function_description("download_and_extract_text", desc)
+        
 
         try:
             response = requests.get(url)
