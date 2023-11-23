@@ -1,0 +1,6 @@
+docker-compose.yml
+.env
+.git/
+devbot.egg-info/
+__pycache__/
+

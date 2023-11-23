@@ -1,6 +1,6 @@
 import typer
 from .bot import bot
-from .llms import get_response
+#from .llms import get_response
 import json
 
 app = typer.Typer()
@@ -21,19 +21,17 @@ def run():
             print(system_message)
         
         # Get response from llms.get_response
-        bot_response = bot.get_bot_output(system_message)
-        if DEBUG:
-            print(bot_response)
-        json_commands = json.loads(bot_response)
-        if DEBUG:
-            print(json_commands)
+        #json_commands = json.loads(bot_response)
+        #if DEBUG:
+            #print(json_commands)
         
         # Execute the commands and store responses
-        responses = my_bot.interpret_json(json_commands)
+        responses, commands = my_bot.process_and_interpret_message(system_message)
         for response in responses:
             print(response)
             my_bot.update_recent_messages(response)  # Function to update recent messages
-
+        for command in commands:
+            my_bot.update_recent_messages(command)
         # Check for heartbeat
         if not my_bot.heart_beat:
             # Wait for user input
