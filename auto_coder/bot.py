@@ -80,7 +80,7 @@ def re_instantiate_weaviate() -> weaviate.Client:
 
 client = re_instantiate_weaviate()
 
-llm = VertexAI()
+llm = VertexAI(max_tokens=2000)
 
 
 
@@ -94,7 +94,7 @@ class bot:
         self.memory = []
         self.prev_commands = []
         self.base_message = base_message
-        self.heart_beat = False
+        self.heart_beated = False
         self.system_notice = ""
         self.token_count = 0
         self.function_descriptions = {}
@@ -586,7 +586,7 @@ class bot:
         """
         
         
-        self.heart_beat = True
+        self.heart_beated = True
     @include_in_system_message
     def download_and_extract_text(self, url):
         """

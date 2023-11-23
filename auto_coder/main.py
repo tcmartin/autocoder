@@ -33,7 +33,7 @@ def run():
         for command in commands:
             my_bot.update_recent_messages(command)
         # Check for heartbeat
-        if not my_bot.heart_beat:
+        if not my_bot.heart_beated:
             # Wait for user input
             user_input = input("Enter your command: ")
             my_bot.update_recent_messages("User: "+user_input)  # Update recent messages with user input
@@ -44,4 +44,4 @@ def run():
                 break
 
         # Reset heartbeat
-        my_bot.heart_beat = False
+        my_bot.heart_beated = False
