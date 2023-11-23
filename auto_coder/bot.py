@@ -80,7 +80,7 @@ def re_instantiate_weaviate() -> weaviate.Client:
 
 client = re_instantiate_weaviate()
 
-llm = VertexAI(max_tokens=2000)
+llm = VertexAI(max_output_tokens=2000)
 
 
 
@@ -521,11 +521,41 @@ class bot:
             self.memory.pop(memory)
         except IndexError:
             return "Memory not found."
+    @include_in_system_message
+    def write_file_to_memory(file_path, chunk_size=500):
+        """
+        Writes the contents of a file to long term memory (vector database) in chunks.
+
+        Parameters:
+        - file_path (str): The path of the file to be written.
+        """
+
+        try:
+            with open(file_path, 'r') as file:
+                while True:
+                    file_chunk = file.read(chunk_size)
+                    if not file_chunk:
+                        break  # End of file reached
+
+                    # Configure batch size and write current chunk to memory
+                    client.batch.configure(batch_size=100)  # Configure batch size
+                    with client.batch as batch:  # Initialize a batch process
+                        properties = {
+                            "file_chunk": file_chunk
+                        }
+                        batch.add_data_object(
+                            data_object=properties,
+                            class_name="FileMemoryChunk"
+                        )
+
+            print(f"File content from {file_path} has been written to memory in chunks.")
+        except IOError as e:
+            print(f"Error reading file: {e}")
         
     @include_in_system_message
     def write_memory(self, memory):
         """
-        Writes to long term memory (vector database).
+        Writes to long term memory (vector database). For small pieces of text
 
         Parameters:
         - memory (str): The memory to be written.
