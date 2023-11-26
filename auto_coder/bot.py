@@ -9,12 +9,15 @@ import tiktoken
 encoding = tiktoken.get_encoding("cl100k_base")
 encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 import inspect
+import time
 import fnmatch
+from googlesearch import search
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_random_exponential,
 )
+from docstring_parser import parse
 sys_message="""
 Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array. 
 functions available: save_memory- description- writes to short term memory
@@ -46,6 +49,13 @@ from kor import create_extraction_chain, Object, Text
 from kor.nodes import Object, Text, Number
 #@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 load_dotenv()
+use_openai = False
+if(os.getenv("OPENAI_APIKEY") is not None):
+    use_openai = True
+    from openai import OpenAI
+    openai_client = OpenAI(os.environ["OPENAI_APIKEY"])
+
+
 headers = {"X-PaLM-Api": os.environ["PALM_APIKEY"]}
 
 def num_tokens_from_string(string: str) -> int:
@@ -86,7 +96,7 @@ llm = VertexAI(max_output_tokens=2000)
 
 class bot:
     
-    def __init__(self, name="", token="", admin_id="", base_message="", file_directory=None,token_threshold=7500):
+    def __init__(self, name="Dev Bot", token="", admin_id="", base_message="", file_directory=None,token_threshold=7500):
         self.context = ""
         self.recent_messages = []
         self.name = name
@@ -100,6 +110,7 @@ class bot:
         self.function_descriptions = {}
         self.token_threshold = token_threshold
         self.extract_function_descriptions()
+        self.function_metadata = {}
         print(self.function_descriptions)
         #self.schema = [self.create_schema_object(name, desc) for name, desc in self.function_descriptions.items()]
         #function_attributes = [self.create_schema_object(name, desc) for name, desc in self.function_descriptions.items()]
@@ -107,7 +118,16 @@ class bot:
         
         self.schema = self.get_schema()
         self.chain = create_extraction_chain(llm, self.schema, encoder_or_encoder_class="json")
-        
+        function_tools = self.create_function_tool_objects()
+        tools_config = [{"type": "retrieval"}] + function_tools
+        if use_openai:
+            self.assistant = openai_client.beta.assistants.create(
+                name=name,
+                instructions=sys_message,
+                model="gpt-4-1106-preview",
+                tools=tools_config,
+            )
+            self.thread = openai_client.beta.threads.create()
         if file_directory is None:
             self.file_directory = os.getcwd()
         else:
@@ -140,7 +160,27 @@ class bot:
         #palm.configure(api_key=os.environ['PALM_APIKEY'])
         #response = palm.chat(context="",messages=[message])
         #return response.last
-
+    def map_type_to_json_schema(self, type_name):
+        # Simple mapping, you might need to extend this based on your types
+        return {
+            "int": "integer",
+            "str": "string",
+            "float": "number",
+            # add more mappings as needed
+        }.get(type_name, "string")
+    def create_function_tool_objects(self):
+        function_tools = []
+        for name, metadata in self.function_metadata.items():
+            function_tool = {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": metadata["description"],
+                    "parameters": metadata["parameters"]
+                }
+            }
+            function_tools.append(function_tool)
+        return function_tools
 
     """def parse_description(self, description):
         
@@ -184,14 +224,16 @@ class bot:
     def get_schema(self):
         parameters = Object(
             id="parameters",
-            description="Parameters for the function. Functions are available under 'System Functions:'.",
+            description="Parameters for the function. Functions are available under 'System Functions:'. Only use single quotes here, as otherwise the json will be invalid.",
             attributes=[],
             examples=[
                 ( "Can you delete lines 1 and 3 from example.txt? And then read in the first five lines? And then do whatever you want next?",
                 [{"file_name": "example.txt", "lines_to_delete": [1, 3]},
                 {"file_name": "example.txt", "start_line": 0, "num_lines": 5},
                 {},]
-                )
+                ),("Can you echo 'hello world' to a file named example.txt?",[{
+                    "command": "echo 'hello world' > example.txt"
+                }])
             ],
             many=False
         )
@@ -218,6 +260,19 @@ class bot:
             many=True
         )
         return schema
+    @include_in_system_message
+    def search_google(query):
+        """Searches google and returns the top 10 results.
+        Parameters:
+        - query (str): The query to search for."""
+        search_results = []
+        res_string = ""
+
+        for j in search(query,num_results=7, advanced=True):#search(query, tld="co.in", num=10, stop=10, pause=2):
+            search_results.append(j)
+            res_string += j.url+" - "+j.title+" - "+j.description
+        print(res_string)
+        return search_results
     def create_schema_object(self, func_name, description):
         """Create a schema object for a function based on its description."""
         params = self.parse_description(description)
@@ -234,8 +289,8 @@ class bot:
             many=False  # Adjust this based on your requirements
         )
     def generate_system_message(self):
-        system_message = self.base_message+f"""You are now part of an autonomous agent system that is geared primarily towards developing programs. This system will run your commands and return output to you when appropriate. You can view and edit files and even download webpages from the internet through this system. This system will also manage memory for you. Speaking of that, you have a limited context window. of {self.token_threshold} tokens that prevent you from being able to see everything at once. Please manage your memory wisely. Additionally, you should be mindful that you only have {self.token_threshold} tokens. You can respond to the user, but your primary focus should be the tasks they give you.\n"""
-        
+        system_message = self.base_message+f"""You are now part of an autonomous agent system that is geared primarily towards developing programs. This system will run your commands and return output to you when appropriate. You can view and edit files and even download webpages from the internet through this system. This system will also manage memory for you. Store important things, key takeawys, etc to memory, since you will forget once things have popped out of the context window. Speaking of that, you have a limited context window. of {self.token_threshold} tokens that prevent you from being able to see everything at once. Please manage your memory wisely. Additionally, you should be mindful that you only have {self.token_threshold} tokens. You can respond to the user, but your primary focus should be the tasks they give you.\n"""
+        system_message += "Short-term Memory:\n"+str(self.memory)+"\n"
     
         system_message += "\nFile Directory Overview:\n" + self.get_directory_overview(self.file_directory)
         system_message += "Recent Messages:\n"
@@ -279,11 +334,9 @@ class bot:
                     for line in file:
                         line = line.strip()
                         if line and not line.startswith('#'):
-                            # Append a wildcard for directories to match all contents
                             if not line.endswith('/'):
                                 line += '/'
                             patterns.append(line)
-                            # Also add the pattern without the trailing slash for exact matches
                             patterns.append(line[:-1])
             return patterns
 
@@ -299,20 +352,22 @@ class bot:
 
         botignore_path = os.path.join(path, '.botignore')
         ignore_patterns = parse_botignore(botignore_path)
-        print(ignore_patterns)
 
         overview = ""
         for root, dirs, files in os.walk(path, topdown=True):
-            # Filter directories and files based on ignore patterns
             dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns, path)]
             files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns, path)]
 
             level = root.replace(path, '').count(os.sep)
-            indent = ' ' * 4 * (level)
+            if level == 0:  # Skip the root directory
+                continue
+
+            indent = ' ' * 4 * (level - 1)
             overview += f"{indent}{os.path.basename(root)}/\n"
-            subindent = ' ' * 4 * (level + 1)
+            subindent = ' ' * 4 * level
             for f in files:
                 overview += f"{subindent}{f}\n"
+
         return overview
     @include_in_system_message
     def save_memory(self, memory):
@@ -322,6 +377,21 @@ class bot:
         - memory (str): The memory to be saved.
         """
         self.memory.append(memory)
+    def extract_function_metadata(self):
+        for name, func in inspect.getmembers(self, predicate=inspect.ismethod):
+            #if name == "download_and_extract_text":
+            #    continue
+            if getattr(func, 'include_in_system_message', False) and func.__doc__:
+                docstring = parse(func.__doc__)
+                params_schema = {
+                    "type": "object",
+                    "properties": {param.arg_name: {"type": self.map_type_to_json_schema(param.type_name)} for param in docstring.params},
+                    "required": [param.arg_name for param in docstring.params if param.is_optional is False]
+                }
+                self.function_metadata[name] = {
+                    "description": docstring.short_description,
+                    "parameters": params_schema
+                }
     @include_in_system_message
     def execute_shell_command(self, command, background=False):
         """
@@ -522,7 +592,7 @@ class bot:
         except IndexError:
             return "Memory not found."
     @include_in_system_message
-    def write_file_to_memory(file_path, chunk_size=500):
+    def write_file_to_memory(self, file_path, chunk_size=500):
         """
         Writes the contents of a file to long term memory (vector database) in chunks.
 
@@ -545,7 +615,7 @@ class bot:
                         }
                         batch.add_data_object(
                             data_object=properties,
-                            class_name="FileMemoryChunk"
+                            class_name="Memory"
                         )
 
             print(f"File content from {file_path} has been written to memory in chunks.")
@@ -630,18 +700,23 @@ class bot:
         """
 
         try:
-            response = requests.get(url)
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36'}
+            response = requests.get(url, verify=False, headers=headers)
             response.raise_for_status()
 
             # Check if the content type is HTML
             if 'text/html' in response.headers.get('Content-Type', ''):
                 # Use BeautifulSoup to parse HTML and extract text
                 soup = BeautifulSoup(response.content, 'html.parser')
+                for script in soup(["script", "style"]):
+                    script.extract()
                 text_content = soup.get_text()
             else:
                 # Directly use response text for non-HTML content
-                text_content = response.text
-
+                text_content_ = response.text
+                lines = (line.strip() for line in text_content_.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text_content = '\n'.join(chunk for chunk in chunks if chunk)
             # Save to a file
             file_path = "downloaded_page.txt"
             with open(file_path, "w", encoding="utf-8") as file:
@@ -650,6 +725,67 @@ class bot:
             return file_path
         except requests.RequestException as e:
             return f"An error occurred: {e}"
+    def get_assistant_response(self, message):
+        message = client.beta.threads.messages.create(
+            thread_id=self.thread.id,
+            role="user",
+            content=message
+        )
+        run = client.beta.threads.runs.create(
+            thread_id=self.thread.id,
+            assistant_id=self.assistant.id,
+            instructions="Please address the user as Jane Doe. The user has a premium account."
+            )
+        print("Waiting for response")
+        print(run.id)
+        completed = False
+        while not completed:
+            run_ = client.beta.threads.runs.retrieve(thread_id=self.thread.id, run_id=run.id)
+            if run_["status"] == "completed":
+                break
+            elif run_["status"] == "failed":
+                print("Run failed")
+                break
+            elif run_["status"] == "cancelled":
+                print("Run cancelled")
+                break
+            elif run_["status"] == "requires_action":
+                tool_calls = run_["required_action"]["tool_calls"]
+                tool_outputs = []
+                for tool_call in tool_calls:
+                    if tool_call["type"] == "function":
+                        result = self.execute_function(tool_call["function"]["name"], tool_call["function"]["arguments"])
+                        output = {
+                            "tool_call_id": tool_call["id"],
+                            "result": result
+                        }
+                        tool_outputs.append(output)
+                run__ = client.beta.threads.runs.submit_tool_outputs(thread_id=self.thread.id, run_id=run.id, tool_outputs=tool_outputs)
+            time.sleep(5)
+        run_ = client.beta.threads.runs.retrieve(thread_id=self.thread.id, run_id=run.id)
+        messages = client.beta.threads.messages.list(thread_id=self.thread.id)
+
+
+    def execute_function(self, function_name, arguments_json):
+        # Parse the arguments JSON string to a dictionary
+        try:
+            arguments = json.loads(arguments_json)
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON format in arguments"}
+
+        # Get the function by name
+        func = getattr(self, function_name, None)
+        if not func or not callable(func):
+            return {"error": f"Function '{function_name}' not found or not callable"}
+
+        # Execute the function with the parsed arguments
+        try:
+            # If your functions expect arguments as **kwargs (keyword arguments)
+            return func(**arguments)
+        except TypeError as e:
+            return {"error": f"Argument mismatch: {e}"}
+        except Exception as e:
+            return {"error": f"An error occurred during function execution: {e}"}
 
     def interpret_result(self, data):
         try:
