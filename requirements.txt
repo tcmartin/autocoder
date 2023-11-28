@@ -8,4 +8,5 @@ tenacity==8.2.3
 langchain==0.0.339
 kor==1.0.0
 google-cloud-aiplatform==1.36.4
+google-auth==0.4.8
 

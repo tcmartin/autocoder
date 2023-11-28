@@ -41,20 +41,24 @@ import os
 
 from dotenv import load_dotenv
 import re
-import google.generativeai as palm
-from langchain.llms import VertexAI
-#from langchain.prompts import PromptTemplate
-#from langchain.chains import LLMChain
-from kor import create_extraction_chain, Object, Text
-from kor.nodes import Object, Text, Number
+
+
+from google.auth.transport.requests import Request
+from google.oauth2.service_account import Credentials
 #@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 load_dotenv()
 use_openai = False
-if(os.getenv("OPENAI_APIKEY") is not None):
+if(os.getenv("OPENAI_API_KEY") is not None):
     use_openai = True
     from openai import OpenAI
-    openai_client = OpenAI(os.environ["OPENAI_APIKEY"])
-
+    openai_client = OpenAI()
+if not use_openai:
+    import google.generativeai as palm
+    from langchain.llms import VertexAI
+    #from langchain.prompts import PromptTemplate
+    #from langchain.chains import LLMChain
+    from kor import create_extraction_chain, Object, Text
+    from kor.nodes import Object, Text, Number
 
 headers = {"X-PaLM-Api": os.environ["PALM_APIKEY"]}
 
@@ -70,7 +74,7 @@ def leftTruncate(text, length):
     else:
         return text
     
-def refresh_token() -> str:
+"""def refresh_token() -> str:
     result = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True)
     if result.returncode != 0:
         print(f"Error refreshing token: {result.stderr}")
@@ -86,11 +90,29 @@ def re_instantiate_weaviate() -> weaviate.Client:
         "X-Palm-Api-Key": token,
       }
     )
+    return client"""
+
+def get_credentials() -> Credentials:
+    credentials = Credentials.from_service_account_file(os.getenv('GCRED_FILE'), scopes=['openid'])
+    request = Request()
+    credentials.refresh(request)
+    return credentials
+
+def re_instantiate_weaviate() -> weaviate.Client:
+    credentials = get_credentials()
+    token = credentials.token
+
+    client = weaviate.Client(
+      url = "http://localhost:8080",  # Replace with your Weaviate URL
+      additional_headers = {
+        "X-Palm-Api-Key": token,
+      }
+    )
     return client
 
 client = re_instantiate_weaviate()
-
-llm = VertexAI(max_output_tokens=2000)
+if not use_openai:
+    llm = VertexAI(max_output_tokens=2000)
 
 
 
@@ -111,27 +133,40 @@ class bot:
         self.token_threshold = token_threshold
         self.extract_function_descriptions()
         self.function_metadata = {}
-        print(self.function_descriptions)
+        self.extract_function_metadata()
+        #print(self.function_descriptions)
         #self.schema = [self.create_schema_object(name, desc) for name, desc in self.function_descriptions.items()]
         #function_attributes = [self.create_schema_object(name, desc) for name, desc in self.function_descriptions.items()]
         #print(function_attributes)
         
-        self.schema = self.get_schema()
-        self.chain = create_extraction_chain(llm, self.schema, encoder_or_encoder_class="json")
-        function_tools = self.create_function_tool_objects()
-        tools_config = [{"type": "retrieval"}] + function_tools
-        if use_openai:
-            self.assistant = openai_client.beta.assistants.create(
-                name=name,
-                instructions=sys_message,
-                model="gpt-4-1106-preview",
-                tools=tools_config,
-            )
-            self.thread = openai_client.beta.threads.create()
         if file_directory is None:
             self.file_directory = os.getcwd()
         else:
             self.file_directory = file_directory
+        if not use_openai:
+            self.schema = self.get_schema()
+            self.chain = create_extraction_chain(llm, self.schema, encoder_or_encoder_class="json")
+        function_tools = self.create_function_tool_objects()
+        tools_config = function_tools
+        #print(tools_config)
+        print(self.file_directory)
+        print(self.get_directory_overview(self.file_directory))
+        if use_openai:
+            if os.getenv("ASSISTANT_ID") is not None:
+                self.assistant = openai_client.beta.assistants.retrieve(os.getenv("ASSISTANT_ID"))
+                if os.getenv("THREAD_ID") is not None:
+                    self.thread = openai_client.beta.threads.retrieve(os.getenv("THREAD_ID"))
+                else:
+                    self.thread = openai_client.beta.threads.create()
+            else:
+                self.assistant = openai_client.beta.assistants.create(
+                    name=name,
+                    instructions="""You are now part of an autonomous agent system that is geared primarily towards developing programs. This system will run your commands and return output to you when appropriate. You can view and edit files and even download webpages from the internet through this system. You can also execute code through it. This system will also manage memory for you. Store important things, key takeawys, etc to memory, since you will forget once things have popped out of the context window. You can respond to the user, but your primary focus should be doing the tasks they give you by using the tools available to you.Important: you must use the *exact* commands and arguments for the tools to work. No files will be uploaded. Instead, work with the files in the provided directory overview.\n""",
+                    model="gpt-4-1106-preview",
+                    tools=tools_config,
+                )
+                self.thread = openai_client.beta.threads.create()
+        
         
     def include_in_system_message(func):
         func.include_in_system_message = True
@@ -288,6 +323,28 @@ class bot:
             attributes=attributes,
             many=False  # Adjust this based on your requirements
         )
+    def make_system_message_openai(self):
+        #system_message = self.base_message+f"""You are now part of an autonomous agent system that is geared primarily towards developing programs. This system will run your commands and return output to you when appropriate. You can view and edit files and even download webpages from the internet through this system. This system will also manage memory for you. Store important things, key takeawys, etc to memory, since you will forget once things have popped out of the context window. Speaking of that, you have a limited context window. of {self.token_threshold} tokens that prevent you from being able to see everything at once. Please manage your memory wisely. Additionally, you should be mindful that you only have {self.token_threshold} tokens. You can respond to the user, but your primary focus should be the tasks they give you.\n"""
+        system_message="Autonomous agent system messages:\n"
+        system_message += "Short-term Memory:\n"+str(self.memory)+"\n"
+        system_message += "\nFile Directory Overview:\n" + self.get_directory_overview(self.file_directory)
+        system_message += "User message:"
+        # Calculate the token count
+        #self.token_count = num_tokens_from_string(system_message)
+
+        # Check if token count exceeds the threshold and truncate if necessary
+        #if self.token_count > self.token_threshold:
+        #    system_message = leftTruncate(system_message, self.token_threshold)
+
+        # Add token count and remaining tokens at the top of the message
+        #token_info = f"Token Count: {self.token_count+600}\nTokens Remaining: {self.token_threshold - self.token_count -600}\n"
+        #system_message = token_info + system_message
+
+        # Add system notice if token count exceeded
+        #if self.token_count > self.token_threshold:
+        #    self.system_notice = "Alert: Token count has exceeded the threshold. Message truncated. Please manage your data."
+        #    system_message = self.system_notice + "\n" + system_message
+        return system_message
     def generate_system_message(self):
         system_message = self.base_message+f"""You are now part of an autonomous agent system that is geared primarily towards developing programs. This system will run your commands and return output to you when appropriate. You can view and edit files and even download webpages from the internet through this system. This system will also manage memory for you. Store important things, key takeawys, etc to memory, since you will forget once things have popped out of the context window. Speaking of that, you have a limited context window. of {self.token_threshold} tokens that prevent you from being able to see everything at once. Please manage your memory wisely. Additionally, you should be mindful that you only have {self.token_threshold} tokens. You can respond to the user, but your primary focus should be the tasks they give you.\n"""
         system_message += "Short-term Memory:\n"+str(self.memory)+"\n"
@@ -352,22 +409,22 @@ class bot:
 
         botignore_path = os.path.join(path, '.botignore')
         ignore_patterns = parse_botignore(botignore_path)
-
-        overview = ""
+        overview = ''
+        first_iteration = True
         for root, dirs, files in os.walk(path, topdown=True):
             dirs[:] = [d for d in dirs if not is_ignored(os.path.join(root, d), ignore_patterns, path)]
             files = [f for f in files if not is_ignored(os.path.join(root, f), ignore_patterns, path)]
+            if first_iteration:
+                first_iteration = False
+                indent = ''
+            else:
+                level = root.replace(path, '').count(os.sep)
+                indent = ' ' * 4 * level
+                overview += f"{indent}{os.path.basename(root)}\n"
 
-            level = root.replace(path, '').count(os.sep)
-            if level == 0:  # Skip the root directory
-                continue
-
-            indent = ' ' * 4 * (level - 1)
-            overview += f"{indent}{os.path.basename(root)}/\n"
-            subindent = ' ' * 4 * level
+            subindent = ' ' * 4 * (root.replace(path, '').count(os.sep) + 1)
             for f in files:
                 overview += f"{subindent}{f}\n"
-
         return overview
     @include_in_system_message
     def save_memory(self, memory):
@@ -379,8 +436,8 @@ class bot:
         self.memory.append(memory)
     def extract_function_metadata(self):
         for name, func in inspect.getmembers(self, predicate=inspect.ismethod):
-            #if name == "download_and_extract_text":
-            #    continue
+            if name == "pop_memory" or name == "":
+                continue
             if getattr(func, 'include_in_system_message', False) and func.__doc__:
                 docstring = parse(func.__doc__)
                 params_schema = {
@@ -480,15 +537,16 @@ class bot:
             return {"error": f"An error occurred: {e}"}
 
     @include_in_system_message
-    def write_file(self, file_name, start_line, text):
+    def write_file(self, file_name, text, start_line=None, mode=None):
         """
-        Inserts text into a file starting at a specific line. If the file doesn't
-        exist, it's created. If the file doesn't have enough lines, it pads the file 
-        with new lines until it reaches the specified start line.
+        Inserts or appends text to a file.
+        If 'start_line' is provided, inserts text at the specified line.
+        If 'mode' is 'append' or 'start_line' is not provided, appends text to the end of the file.
         Parameters:
         - file_name (str): The name of the file to be written to.
-        - start_line (int): The line to start inserting text from (0-indexed).
-        - text (str): The text to be inserted.
+        - text (str): The text to be inserted or appended.
+        - start_line (int, optional): The line to start inserting text from (0-indexed).
+        - mode (str, optional): The mode of operation ('append' to append text).
         """
 
         try:
@@ -499,17 +557,23 @@ class bot:
             except FileNotFoundError:
                 existing_lines = []
 
-            # Ensure existing_lines has enough entries to reach the start_line
-            while len(existing_lines) < start_line:
-                existing_lines.append('\n')
+            # Decide whether to insert or append based on 'start_line' and 'mode'
+            if start_line is not None:
+                try:
+                    start_line = int(start_line)  # Ensure start_line is an integer
+                    # Ensure existing_lines has enough entries to reach the start_line
+                    while len(existing_lines) < start_line:
+                        existing_lines.append('\n')
 
-            # Insert the new text at the specified line
-            insertion_point = start_line if start_line < len(existing_lines) else -1
-            if insertion_point != -1:
-                # If the start_line is within the existing_lines, insert there
-                existing_lines.insert(insertion_point, text + '\n')
-            else:
-                # If the start_line is beyond the end, just append
+                    # Insert the new text at the specified line
+                    insertion_point = start_line if start_line < len(existing_lines) else -1
+                    if insertion_point != -1:
+                        existing_lines.insert(insertion_point, text + '\n')
+                except:
+                    existing_lines.append(text + '\n')
+                else:
+                    existing_lines.append(text + '\n')
+            elif mode == 'append' or start_line is None:
                 existing_lines.append(text + '\n')
 
             # Write back the modified content
@@ -519,6 +583,7 @@ class bot:
         except Exception as e:
             # Handle other exceptions
             return f"An error occurred: {e}"
+
 
 
     @include_in_system_message
@@ -726,12 +791,12 @@ class bot:
         except requests.RequestException as e:
             return f"An error occurred: {e}"
     def get_assistant_response(self, message):
-        message = client.beta.threads.messages.create(
+        message = openai_client.beta.threads.messages.create(
             thread_id=self.thread.id,
             role="user",
             content=message
         )
-        run = client.beta.threads.runs.create(
+        run = openai_client.beta.threads.runs.create(
             thread_id=self.thread.id,
             assistant_id=self.assistant.id,
             instructions="Please address the user as Jane Doe. The user has a premium account."
@@ -740,31 +805,35 @@ class bot:
         print(run.id)
         completed = False
         while not completed:
-            run_ = client.beta.threads.runs.retrieve(thread_id=self.thread.id, run_id=run.id)
-            if run_["status"] == "completed":
+            run_ = openai_client.beta.threads.runs.retrieve(thread_id=self.thread.id, run_id=run.id)
+            if run_.status == "completed":
                 break
-            elif run_["status"] == "failed":
+            elif run_.status == "failed":
                 print("Run failed")
                 break
-            elif run_["status"] == "cancelled":
+            elif run_.status == "cancelled":
                 print("Run cancelled")
                 break
-            elif run_["status"] == "requires_action":
-                tool_calls = run_["required_action"]["tool_calls"]
+            elif run_.status == "requires_action":
+                tool_calls = run_.required_action.submit_tool_outputs.tool_calls
                 tool_outputs = []
                 for tool_call in tool_calls:
-                    if tool_call["type"] == "function":
-                        result = self.execute_function(tool_call["function"]["name"], tool_call["function"]["arguments"])
+                    print(tool_call)
+                    if tool_call.type == "function":
+                        result = self.execute_function(tool_call.function.name, tool_call.function.arguments)
                         output = {
-                            "tool_call_id": tool_call["id"],
-                            "result": result
+                            "tool_call_id": tool_call.id,
+                            "output": json.dumps(result)
                         }
+                        print(output)
                         tool_outputs.append(output)
-                run__ = client.beta.threads.runs.submit_tool_outputs(thread_id=self.thread.id, run_id=run.id, tool_outputs=tool_outputs)
+                run__ = openai_client.beta.threads.runs.submit_tool_outputs(thread_id=self.thread.id, run_id=run.id, tool_outputs=tool_outputs)
             time.sleep(5)
-        run_ = client.beta.threads.runs.retrieve(thread_id=self.thread.id, run_id=run.id)
-        messages = client.beta.threads.messages.list(thread_id=self.thread.id)
-
+        run_ = openai_client.beta.threads.runs.retrieve(thread_id=self.thread.id, run_id=run.id)
+        messages = openai_client.beta.threads.messages.list(thread_id=self.thread.id)
+        #print(messages)
+        #print(messages.data[-1].content[0].text.value)
+        return messages.data[0].content[0].text.value #this is the assistant response
 
     def execute_function(self, function_name, arguments_json):
         # Parse the arguments JSON string to a dictionary
@@ -772,7 +841,7 @@ class bot:
             arguments = json.loads(arguments_json)
         except json.JSONDecodeError:
             return {"error": "Invalid JSON format in arguments"}
-
+        ordered_args = list(arguments.values())
         # Get the function by name
         func = getattr(self, function_name, None)
         if not func or not callable(func):
@@ -781,7 +850,8 @@ class bot:
         # Execute the function with the parsed arguments
         try:
             # If your functions expect arguments as **kwargs (keyword arguments)
-            return func(**arguments)
+           #* is the unpacking operator, which unpacks the dictionary into keyword arguments
+           return func(*ordered_args)
         except TypeError as e:
             return {"error": f"Argument mismatch: {e}"}
         except Exception as e:
