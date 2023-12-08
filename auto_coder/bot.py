@@ -18,23 +18,7 @@ from tenacity import (
     wait_random_exponential,
 )
 from docstring_parser import parse
-sys_message="""
-Respond in a json format array. You can’t respond directly to the user, but this system will manage information for you. Additionally, you should be mindful that you only have 7000 tokens.The only way to respond to the user is using the message_user function in the array. 
-functions available: save_memory- description- writes to short term memory
-params: memory - type=string
-pop_memory- description removes from memory
-params: memory - type=string
-write_memory- writes to long term memory (vector database)
-params: memory - type=string
-message_user-sends a message to the user
-params: message - type=string
-heart_beat- prompts you again without waiting for user input
-Format: {function:params}
-Example: {save_memory: {memory: "This is interesting"}}
 
-message from the user: 
-Hi! I’m intereste in math and computer science
-"""
 
 
 import os
@@ -158,6 +142,7 @@ class bot:
                     self.thread = openai_client.beta.threads.retrieve(os.getenv("THREAD_ID"))
                 else:
                     self.thread = openai_client.beta.threads.create()
+                    print("Thread ID: save this for persistence: "+self.thread.id)
             else:
                 self.assistant = openai_client.beta.assistants.create(
                     name=name,
@@ -166,6 +151,7 @@ class bot:
                     tools=tools_config,
                 )
                 self.thread = openai_client.beta.threads.create()
+                print("Thread ID: save this for persistence: "+self.thread.id)
         
         
     def include_in_system_message(func):
