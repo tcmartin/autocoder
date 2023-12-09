@@ -140,6 +140,11 @@ class bot:
                 self.assistant = openai_client.beta.assistants.retrieve(os.getenv("ASSISTANT_ID"))
                 if os.getenv("THREAD_ID") is not None:
                     self.thread = openai_client.beta.threads.retrieve(os.getenv("THREAD_ID"))
+                    runs = openai_client.beta.threads.runs.list(os.getenv("THREAD_ID"))
+                    latest_run = runs.data[0]
+                    if(latest_run.status == "in_progress" or latest_run.status == "queued" or latest_run.status == "requires_action"):
+                        run = openai_client.beta.threads.runs.cancel(thread_id=os.getenv("THREAD_ID"), run_id = run.id)
+                        print('cancelled run')
                 else:
                     self.thread = openai_client.beta.threads.create()
                     print("Thread ID: save this for persistence: "+self.thread.id)
