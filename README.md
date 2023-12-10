@@ -41,9 +41,9 @@ AutoCoder is a cutting-edge programming assistant powered by GPT-4/PaLM. It oper
     GCRED_FILE=path_to_your_google_credentials.json
     ```
   - Add your PaLM key to `.env`
-  ```
-  PALM_APIKEY=your_api_key_here
-  ```
+    ```
+    PALM_APIKEY=your_api_key_here
+    ```
 
 ## Configure `.botignore`
 
