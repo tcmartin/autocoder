@@ -18,6 +18,10 @@ AutoCoder is a cutting-edge programming assistant powered by GPT-4/PaLM. It oper
    ```bash
    pip install -r requirements.txt
    ```
+2. **Install**:
+   ```bash
+    source install.sh
+   ```
 ## Environment Setup
 
 - **For OpenAI users**:
