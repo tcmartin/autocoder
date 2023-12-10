@@ -94,9 +94,10 @@ def re_instantiate_weaviate() -> weaviate.Client:
     )
     return client
 
-client = re_instantiate_weaviate()
+
 if not use_openai:
     llm = VertexAI(max_output_tokens=2000)
+    client = re_instantiate_weaviate()
 
 
 
